@@ -611,7 +611,10 @@ if (targetPlatform === 'linux') {
   // 只按 glibc 选择 bin/glibc/system.node（flock.ts 的 glibcVersionRuntime 判定）。
   // 保留 musl 那份会让 linuxdeploy 在 AppImage 阶段对静态 .node 调 ldd 而 abort。
   pruneMuslNodeAddonBinaries(nmDest);
-  pruneForeignElfBinaries(nmDest, process.arch);
+  // 收尾必须扫整棵 staged 树：vendor/pnpm 的 fastlist .exe 与剪枝残留的
+  // 空 musl_x64 目录在 nmDest/assets 之外，2026-10-06 run 37445876795
+  // full+lite 双双死在 Audit RPM package（不可达载荷检查整包拒绝）。
+  pruneForeignElfBinaries(staged, process.arch);
 }
 if (targetPlatform === 'darwin') {
   console.log('[stage] 移除 Darwin 不可达的 Windows/Linux payload');

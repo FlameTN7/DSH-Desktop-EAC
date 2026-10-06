@@ -94,13 +94,26 @@ function isElfBuffer(data) {
   return data.length >= 20 && data[0] === 0x7f && data[1] === 0x45 && data[2] === 0x4c && data[3] === 0x46;
 }
 
-/** 删除 Linux 打包会炸的外来 ELF：非目标架构的 ELF（full-pack 种子里的
- * darwin/arm 预构建）与 musl 变体。后者包括嵌套 node_modules 里的
- * @koromix/koffi-linux-x64/musl_x64/koffi.node（NEEDED libc.musl-x86_64.so.1）：
- * 顶层 rmSync 只管提升副本，嵌套副本全部漏网，2026-10-06 CI 实测 linuxdeploy
- * 在 AppImage 阶段 abort："Could not find dependency: libc.musl-x86_64.so.1"。
- * musl 检测按字节扫描（动态 musl 的 NEEDED/INTERP 字符串必然含 libc.musl
- * 或 ld-musl）；路径含 musl 的静态变体由路径兜底命中。 */
+/** audit-rpm-package.mjs 的不可达载荷正则（musl 段 / .exe / .dll）。
+ * RPM 文件列表连空目录一起列出：剪掉 musl 变体文件后残留的空 musl_x64
+ * 目录同样会被整包拒绝，所以这里按名字整目录剔除。 */
+const MUSL_NAME_RE = /^(?:musl(?:[_-]|$)|linuxmusl)/i;
+
+/** 删除 Linux 打包会炸或审计会拒的外来载荷：
+ * 1. 非目标架构 ELF（full-pack 种子里的 darwin/arm 预构建）；
+ * 2. musl ELF 变体——嵌套 node_modules 里的
+ *    @koromix/koffi-linux-x64/musl_x64/koffi.node（NEEDED libc.musl-x86_64.so.1）
+ *    顶层 rmSync 只管提升副本，嵌套副本全部漏网，2026-10-06 CI 实测 linuxdeploy
+ *    在 AppImage 阶段 abort："Could not find dependency: libc.musl-x86_64.so.1"；
+ *    上游 pruneLinuxPayloads 只查 ELF 架构位，静态 musl 恰好也是合法 x64 ELF，
+ *    天生检不出来，必须按字节扫 NEEDED/INTERP；
+ * 3. Windows PE（.exe/.dll）——Linux 永不加载，且审计正则整包拒绝；
+ *    唯一来源是 vendor/pnpm/dist/vendor/fastlist-*.exe（pnpm 的 win32 进程
+ *    枚举器），官方 full-pack 种子实测 0 个 PE 文件；
+ * 4. musl 命名的目录/文件（含剪枝后残留的空 musl_x64 目录）与剪枝产生的
+ *    空目录（audit 按路径段匹配，空目录也会出现在 rpm -qlp 里）。
+ * 调用方须扫整棵 staged 树：vendor/pnpm 在 nmDest/assets 范围之外，
+ * 2026-10-06 run 37445876795 full+lite 双双死在 Audit RPM 步骤即此漏网。 */
 export function pruneForeignElfBinaries(dir, arch) {
   const expectedMachine = arch === 'arm64' ? 0xb7 : 0x3e; // EM_AARCH64 / EM_X86_64
   const pruned = [];
@@ -113,11 +126,24 @@ export function pruneForeignElfBinaries(dir, arch) {
     }
     for (const entry of entries) {
       const p = path.join(d, entry.name);
-      if (entry.isDirectory()) {
-        visit(p);
+      if (MUSL_NAME_RE.test(entry.name)) {
+        rmSync(p, { recursive: true, force: true });
+        pruned.push(path.relative(dir, p));
         continue;
       }
-      if (!entry.isFile()) continue;
+      if (entry.isDirectory()) {
+        visit(p);
+        try {
+          if (readdirSync(p).length === 0) rmSync(p, { recursive: true, force: true });
+        } catch { /* 并发删除竞态，忽略 */ }
+        continue;
+      }
+      if (!entry.isFile()) continue; // 符号链接不动（lstat 语义，不跟随）
+      if (/\.(?:exe|dll)$/i.test(entry.name)) {
+        rmSync(p, { force: true });
+        pruned.push(path.relative(dir, p));
+        continue;
+      }
       const candidate = /\.(?:node|bare|so)$/i.test(entry.name) || /musl/i.test(p);
       if (!candidate) continue;
       let data;
@@ -138,7 +164,7 @@ export function pruneForeignElfBinaries(dir, arch) {
   };
   visit(dir);
   if (pruned.length) {
-    console.log(`[stage] 已剔除外来/musl ELF（${arch} glibc 发行不可加载）：${pruned.join(', ')}`);
+    console.log(`[stage] 已剔除 musl/外来 ELF/Windows PE（${arch} glibc 发行不可达）：${pruned.join(', ')}`);
   }
 }
 

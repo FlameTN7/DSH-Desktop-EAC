@@ -83,6 +83,32 @@ function assertNoLinuxMuslAddon(desktop) {
   }
 }
 
+// audit-rpm-package.mjs 不可达载荷正则的镜像：staged 树里出现 .exe/.dll 或
+// musl 命名段，30+ 分钟的 Tauri 构建之后必然被 RPM 审计整包拒绝
+//（2026-10-06 run 37445876795：vendor/pnpm 的 fastlist-*.exe 让 full/lite
+// 双 job 死在 Audit RPM 步骤）。装配期 pruneForeignElfBinaries 负责剔除，
+// 这里是打包前的最后一道闸门——目录也检查（rpm -qlp 连目录条目一起列出，
+// 尾部补测一次带斜杠形态，覆盖名为 musl 的目录）。
+const FORBIDDEN_LINUX_PAYLOAD_RE = /(?:^|\/)(?:musl(?:[_-]|\/)|linuxmusl|[^/]+\.exe$|[^/]+\.dll$)/i;
+
+function assertNoForbiddenLinuxPayloads(root) {
+  const violations = [];
+  const visit = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const relative = path.relative(root, path.join(dir, entry.name)).split(path.sep).join('/');
+      if (FORBIDDEN_LINUX_PAYLOAD_RE.test(relative) || FORBIDDEN_LINUX_PAYLOAD_RE.test(`${relative}/`)) {
+        violations.push(relative);
+        continue; // 违禁目录不再深入：整棵树都是剔除对象
+      }
+      if (entry.isDirectory()) visit(path.join(dir, entry.name));
+    }
+  };
+  visit(root);
+  if (violations.length) {
+    throw new Error(`forbidden Linux payload is staged: ${violations.join(', ')}`);
+  }
+}
+
 function requireRegularFile(root, relative) {
   const file = path.join(root, relative);
   if (!existsSync(file) || !statSync(file).isFile()) {
@@ -100,7 +126,10 @@ export function verifyStagedRuntime(stageRoot) {
   }
 
   const desktop = path.join(root, 'dsh-desktop');
-  if (process.platform === 'linux') assertNoLinuxMuslAddon(desktop);
+  if (process.platform === 'linux') {
+    assertNoLinuxMuslAddon(desktop);
+    assertNoForbiddenLinuxPayloads(root);
+  }
   const manifestFile = path.join(desktop, 'bundle-manifest.json');
   requireRegularFile(root, 'dsh-desktop/bundle-manifest.json');
   const manifest = JSON.parse(readFileSync(manifestFile, 'utf8'));
