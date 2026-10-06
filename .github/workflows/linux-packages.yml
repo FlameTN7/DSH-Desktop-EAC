@@ -82,8 +82,25 @@ jobs:
           curl -fL --retry 3 -o /tmp/eac-full.zip "$FULL_PACK_URL"
           echo "$FULL_PACK_SHA256  /tmp/eac-full.zip" | sha256sum -c
           rm -rf .full-pack && mkdir -p .full-pack
-          unzip -q /tmp/eac-full.zip 'dsh-desktop*full-pack*' -d .full-pack \
-            || { rm -rf .full-pack && mkdir -p .full-pack && unzip -q /tmp/eac-full.zip -d .full-pack; }
+          # 官方 zip 条目名用反斜杠（Windows 打包产物），runner 的 unzip 6.0
+          # 不会规范成目录 —— 改用 python3 按前缀提取并规范化路径。
+          python3 - <<'PY'
+          import os, shutil, zipfile
+          root = '.full-pack'
+          prefix = 'dsh-desktop/assets/full-pack/'
+          with zipfile.ZipFile('/tmp/eac-full.zip') as z:
+              entries = [i for i in z.infolist() if i.filename.replace('\\', '/').startswith(prefix)]
+              print('full-pack entries:', len(entries))
+              for info in entries:
+                  name = info.filename.replace('\\', '/')
+                  target = os.path.join(root, name)
+                  if info.is_dir() or name.endswith('/'):
+                      os.makedirs(target, exist_ok=True)
+                      continue
+                  os.makedirs(os.path.dirname(target), exist_ok=True)
+                  with z.open(info) as src, open(target, 'wb') as dst:
+                      shutil.copyfileobj(src, dst)
+          PY
           rm -f /tmp/eac-full.zip
           test -f .full-pack/dsh-desktop/assets/full-pack/composition.json
           test -d .full-pack/dsh-desktop/assets/full-pack/profile-seed/node_modules

@@ -89,6 +89,59 @@ export function pruneMuslNodeAddonBinaries(nodeModules) {
   if (pruned.length) console.log(`[stage] 已剔除 musl 变体：${pruned.join(', ')}`);
 }
 
+/** ELF 魔数判断（前 20 字节足够取 e_machine）。 */
+function isElfBuffer(data) {
+  return data.length >= 20 && data[0] === 0x7f && data[1] === 0x45 && data[2] === 0x4c && data[3] === 0x46;
+}
+
+/** 删除 Linux 打包会炸的外来 ELF：非目标架构的 ELF（full-pack 种子里的
+ * darwin/arm 预构建）与 musl 变体。后者包括嵌套 node_modules 里的
+ * @koromix/koffi-linux-x64/musl_x64/koffi.node（NEEDED libc.musl-x86_64.so.1）：
+ * 顶层 rmSync 只管提升副本，嵌套副本全部漏网，2026-10-06 CI 实测 linuxdeploy
+ * 在 AppImage 阶段 abort："Could not find dependency: libc.musl-x86_64.so.1"。
+ * musl 检测按字节扫描（动态 musl 的 NEEDED/INTERP 字符串必然含 libc.musl
+ * 或 ld-musl）；路径含 musl 的静态变体由路径兜底命中。 */
+export function pruneForeignElfBinaries(dir, arch) {
+  const expectedMachine = arch === 'arm64' ? 0xb7 : 0x3e; // EM_AARCH64 / EM_X86_64
+  const pruned = [];
+  const visit = (d) => {
+    let entries;
+    try {
+      entries = readdirSync(d, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const p = path.join(d, entry.name);
+      if (entry.isDirectory()) {
+        visit(p);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      const candidate = /\.(?:node|bare|so)$/i.test(entry.name) || /musl/i.test(p);
+      if (!candidate) continue;
+      let data;
+      try {
+        data = readFileSync(p);
+      } catch {
+        continue;
+      }
+      if (!isElfBuffer(data)) continue;
+      const machine = data[18] | (data[19] << 8);
+      const text = data.toString('latin1');
+      const musl = text.includes('libc.musl') || text.includes('ld-musl');
+      if (musl || machine !== expectedMachine) {
+        rmSync(p, { force: true });
+        pruned.push(path.relative(dir, p));
+      }
+    }
+  };
+  visit(dir);
+  if (pruned.length) {
+    console.log(`[stage] 已剔除外来/musl ELF（${arch} glibc 发行不可加载）：${pruned.join(', ')}`);
+  }
+}
+
 /** 是否为 64 位小端 Mach-O（.node 在 macOS 上为 Mach-O dylib）。
  * 假设：npm 生态的 darwin-arm64 .node 均为 thin（单架构）dylib；若未来出现 FAT/universal 二进制会被误删，届时需扩展魔数识别。 */
 export function isMachO(file) {

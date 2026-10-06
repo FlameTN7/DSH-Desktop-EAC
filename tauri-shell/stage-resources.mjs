@@ -22,6 +22,7 @@ import {
   pruneDarwinPayloads,
   pruneLinuxPayloads,
   pruneMuslNodeAddonBinaries,
+  pruneForeignElfBinaries,
   pruneNonDarwinPrebuilds,
   pruneNonLinuxPrebuilds,
 } from './stage-platform-prune.mjs';
@@ -169,6 +170,9 @@ const LIB_DESKTOP = [
   // Task 3.3 插件治理三件套 + 其 lib/desktop 依赖
   'guard-box.js', 'companion-sync.js', 'plugin-ops.js',
   'install-profile.js', 'plugin-sync-registry.js',
+  // full-pack 离线全量包消费层（profile.js 建档时 require；无 assets/full-pack
+  // 时自动退化为空操作，lite 形态同样安全装配）
+  'full-composition.js',
   // Task 3.3 阶段 3：files.revert 的白名单根
   'file-roots.js',
   // 注意：feature-pack.js 属 ADR 0006「增值功能，后续版本按需」的剥出面，
@@ -500,6 +504,12 @@ if (installProfile === 'full') {
       throw new Error('[stage] full 形态需要 lib/desktop/full-composition.js（tsc 编译产物缺失，先在 dsh-desktop 执行 npm run build）');
     }
     cpSync(fullPackDir, path.join(staged, 'dsh-desktop', 'assets', 'full-pack'), { recursive: true });
+    // 种子随官方 Windows 包分发，携带 darwin/arm 预构建与 musl 变体时一并剪除
+    //（Linux 打包 linuxdeploy 只接受本机架构的 glibc ELF）。
+    pruneForeignElfBinaries(
+      path.join(staged, 'dsh-desktop', 'assets', 'full-pack', 'profile-seed', 'node_modules'),
+      process.arch,
+    );
     console.log('[stage] full-pack 离线全量种子已随行（full 形态）');
   } else {
     console.log('[stage] 警告：full 形态未提供 DSH_EAC_FULL_PACK_DIR —— 产物不含离线全量种子（内容面等同 lite）');
@@ -601,6 +611,7 @@ if (targetPlatform === 'linux') {
   // 只按 glibc 选择 bin/glibc/system.node（flock.ts 的 glibcVersionRuntime 判定）。
   // 保留 musl 那份会让 linuxdeploy 在 AppImage 阶段对静态 .node 调 ldd 而 abort。
   pruneMuslNodeAddonBinaries(nmDest);
+  pruneForeignElfBinaries(nmDest, process.arch);
 }
 if (targetPlatform === 'darwin') {
   console.log('[stage] 移除 Darwin 不可达的 Windows/Linux payload');

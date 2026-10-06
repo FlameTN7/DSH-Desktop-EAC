@@ -45,6 +45,8 @@ const REQUIRED_FILES = [
   'dsh-desktop/lib/desktop/plugin-ops.js',
   'dsh-desktop/lib/desktop/install-profile.js',
   'dsh-desktop/lib/desktop/plugin-sync-registry.js',
+  // full-pack 离线全量包消费层（profile.js 依赖，两种形态均装配）
+  'dsh-desktop/lib/desktop/full-composition.js',
   // v6 Task 3.3 阶段 3：files.revert 的白名单根
   'dsh-desktop/lib/desktop/file-roots.js',
   'dsh-desktop/scripts/onboarding.js',
