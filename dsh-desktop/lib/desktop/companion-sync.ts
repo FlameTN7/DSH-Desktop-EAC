@@ -30,6 +30,7 @@ import { pluginCapabilityDetails } from './platform';
 import { writeFileAtomic } from '../atomic-json.js';
 import { parsePatchData, registeredPatchEntryIds, resolveBundleIdentities, toggleBundleInPatch } from '../bundle-identity';
 import { PLUGIN_UPDATE_SOURCES as GENERATED_PLUGIN_UPDATE_SOURCES } from './plugin-sync-registry';
+import { readComposition, packOwnsPackage } from './full-composition';
 // 未类型化依赖（Wave 3 收编），先以窄签名消费。
 const updater = require('../../updater') as {
   loadSettings(c: ReturnType<typeof updCtx>): { removedPlugins?: unknown };
@@ -617,6 +618,9 @@ function retireRemovedBuiltinPlugins(profileDirP: string): boolean {
   const packageFile = path.join(profileDirP, 'package.json');
   let complete = true;
   for (const plugin of RETIRED_BUILTIN_PLUGINS) {
+    // full-pack 所有权优先于退役清理：官方 full 种子携带的包/行不在此拆除
+    // （与官方 v6.0.0 companion-sync 的 packOwnsPackage 护栏等价）。
+    if (packOwnsPackage(profileDirP, plugin.name)) continue;
     try {
       let pkg: Record<string, any> = {};
       try { pkg = JSON.parse(fs.readFileSync(packageFile, 'utf8')); }
@@ -1069,7 +1073,13 @@ function ensurePluginHostDeps(profileDirP: string): void {
       distributionClasses: PLUGIN_DISTRIBUTION_CLASSES,
       builtinIds: DISTRIBUTION_BUILTIN_PLUGIN_IDS,
       recommendedIds: RECOMMENDED_PACK_PLUGIN_IDS,
-      skipIds: companionBundleIds,
+      // full-pack 托管包不参与「外部默认禁用」规划（与官方 v6.0.0 等价）。
+      skipIds: [
+        ...companionBundleIds,
+        ...(readComposition()?.managedPackages ?? [])
+          .filter((name) => packOwnsPackage(profileDirP, name))
+          .flatMap((name) => [name, canonicalBundleId(name)]),
+      ],
     });
     if (externalDefaults.length) {
       patch = toggleBundleInPatch(patch, {

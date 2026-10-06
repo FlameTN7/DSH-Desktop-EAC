@@ -8,6 +8,12 @@
     ],
     "icon": [
       "icons/icon.png"
-    ]
+    ],
+    "resources": {
+      "staged-resources/sidecar/": "sidecar/",
+      "staged-resources/dsh-desktop/": "dsh-desktop/",
+      "staged-resources/ui-skin-manager/": "ui-skin-manager/",
+      "staged-resources/dpx/": "dpx/"
+    }
   }
 }

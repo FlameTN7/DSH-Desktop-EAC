@@ -381,7 +381,18 @@ copyRequired(path.join(dd, '.npmrc'), path.join(staged, 'dsh-desktop', '.npmrc')
 
 // 安装形态标记（v5.4 双形态）：随包默认「完整版」；NSIS 安装器按用户选择
 // 覆写为 lite（installer-hooks.nsh POSTINSTALL）。便携包保持缺省完整版。
-writeFileSync(path.join(staged, 'dsh-desktop', 'profile.txt'), 'full\n');
+// Linux 打包新增：--profile=full|lite 显式选择安装形态（缺省 full，亦可经
+// DSH_EAC_PROFILE 环境变量指定）；full 形态可经 DSH_EAC_FULL_PACK_DIR
+// 携带离线全量种子（与官方 Windows full 包同构，见下方 full-pack 装配块）。
+const profileArg = process.argv.find((arg) => arg.startsWith('--profile='));
+const installProfile = profileArg
+  ? profileArg.slice('--profile='.length)
+  : process.env.DSH_EAC_PROFILE || 'full';
+if (installProfile !== 'full' && installProfile !== 'lite') {
+  throw new Error(`[stage] 不支持的安装形态: ${installProfile}（仅 full | lite）`);
+}
+writeFileSync(path.join(staged, 'dsh-desktop', 'profile.txt'), installProfile + '\n');
+console.log(`[stage] 安装形态: ${installProfile}`);
 writeFileSync(
   path.join(staged, 'dsh-desktop', 'environment-policy.json'),
   JSON.stringify({
@@ -470,6 +481,29 @@ console.log('[stage] assets（v6 最简本体：图标 + WS 客户端 + skills�
     cpSync(from, path.join(staged, 'dsh-desktop', 'assets', 'plugins', dir), { recursive: true });
   }
   console.log(`[stage] 内置插件已随行（Task 3.3，${BUILTIN_PLUGIN_DIRS.length} 个）`);
+}
+
+// Linux full 形态：离线全量包随行（composition.json + profile-closure.json +
+// profile-seed/，源自官方 v6.0.0 full 发行包的平台无关种子；首启由
+// dsh-desktop/lib/desktop/full-composition.ts 原子播种）。lite 形态不携带。
+if (installProfile === 'full') {
+  const fullPackDir = process.env.DSH_EAC_FULL_PACK_DIR || null;
+  if (fullPackDir) {
+    if (
+      !existsSync(path.join(fullPackDir, 'composition.json'))
+      || !existsSync(path.join(fullPackDir, 'profile-seed', 'package.json'))
+      || !existsSync(path.join(fullPackDir, 'profile-seed', 'node_modules'))
+    ) {
+      throw new Error(`[stage] DSH_EAC_FULL_PACK_DIR 指向的 full-pack 不完整: ${fullPackDir}`);
+    }
+    if (!existsSync(path.join(staged, 'dsh-desktop', 'lib', 'desktop', 'full-composition.js'))) {
+      throw new Error('[stage] full 形态需要 lib/desktop/full-composition.js（tsc 编译产物缺失，先在 dsh-desktop 执行 npm run build）');
+    }
+    cpSync(fullPackDir, path.join(staged, 'dsh-desktop', 'assets', 'full-pack'), { recursive: true });
+    console.log('[stage] full-pack 离线全量种子已随行（full 形态）');
+  } else {
+    console.log('[stage] 警告：full 形态未提供 DSH_EAC_FULL_PACK_DIR —— 产物不含离线全量种子（内容面等同 lite）');
+  }
 }
 
 // dsh-distribution 发行版描述符（阶段 3）：组件清单来自插件来源台账

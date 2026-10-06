@@ -1,0 +1,132 @@
+name: Linux packages (full/lite)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: '24'
+  PNPM_VERSION: '11.7.0'
+  KERNEL_VERSION: '0.2.0-rc.2'
+  FULL_PACK_URL: 'https://github.com/DSH-EAC/EAC-Desktop/releases/download/v6.0.0/Deepseek-Harness-EAC-full-v6.0.0-x64-portable.zip'
+  FULL_PACK_SHA256: 'afc13666130f133f70b556923d0676ba592b20a36f9e18b6cd2a0e79629abfbc'
+
+jobs:
+  build:
+    name: Linux x64 (${{ matrix.variant }})
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [full, lite]
+    timeout-minutes: 150
+    defaults:
+      run:
+        working-directory: dsh-desktop
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # 打包必须携带固定提交的 dsh-dpx JS API（ADR 0004）。
+          submodules: recursive
+
+      - name: Verify native runner architecture
+        run: node -e "if (process.arch !== 'x64') throw new Error('expected x64, got ' + process.arch)"
+
+      - name: Verify dsh-dpx submodule pin
+        working-directory: ${{ github.workspace }}
+        run: node tauri-shell/check-dpx-pin.mjs
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: dsh-desktop/package-lock.json
+
+      - name: Install pinned pnpm
+        run: npm install --global pnpm@${{ env.PNPM_VERSION }} && pnpm --version
+
+      - name: Cache vendored kernel
+        uses: actions/cache@v4
+        with:
+          path: dsh-desktop/vendor/kernel
+          key: linux-x64-kernel-${{ env.KERNEL_VERSION }}-${{ hashFiles('dsh-desktop/scripts/fetch-kernel.ts') }}
+
+      - name: Prepare vendored kernel
+        run: node scripts/fetch-kernel.js
+
+      - name: Install dependencies
+        run: npm run ci:install
+
+      - name: Fetch bundled Node and npm runtimes
+        run: npm run fetch-runtime
+
+      - name: Set up stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux Tauri dependencies
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libfuse2 rpm
+
+      - name: Fetch Cargo dependencies
+        working-directory: ${{ github.workspace }}/tauri-shell
+        run: cargo fetch --locked
+
+      - name: Fetch official full-pack seed (pinned sha256)
+        if: matrix.variant == 'full'
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          curl -fL --retry 3 -o /tmp/eac-full.zip "$FULL_PACK_URL"
+          echo "$FULL_PACK_SHA256  /tmp/eac-full.zip" | sha256sum -c
+          rm -rf .full-pack && mkdir -p .full-pack
+          unzip -q /tmp/eac-full.zip 'dsh-desktop*full-pack*' -d .full-pack \
+            || { rm -rf .full-pack && mkdir -p .full-pack && unzip -q /tmp/eac-full.zip -d .full-pack; }
+          rm -f /tmp/eac-full.zip
+          test -f .full-pack/dsh-desktop/assets/full-pack/composition.json
+          test -d .full-pack/dsh-desktop/assets/full-pack/profile-seed/node_modules
+          echo "DSH_EAC_FULL_PACK_DIR=$PWD/.full-pack/dsh-desktop/assets/full-pack" >> "$GITHUB_ENV"
+
+      - name: Assemble staged runtime
+        working-directory: ${{ github.workspace }}
+        run: node tauri-shell/stage-resources.mjs --target=linux --skip-npm --profile=${{ matrix.variant }}
+
+      - name: Verify staged closure and bundle integrity
+        working-directory: ${{ github.workspace }}
+        run: node dsh-desktop/scripts/verify-staged-runtime.mjs
+
+      - name: Check RPM toolchain
+        run: rpm --version && rpmbuild --version
+
+      - name: Build Tauri installers
+        working-directory: ${{ github.workspace }}/tauri-shell
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: '1'
+        run: npx -y @tauri-apps/cli@2 build --verbose
+
+      - name: Audit RPM package
+        working-directory: ${{ github.workspace }}
+        run: node dsh-desktop/scripts/audit-rpm-package.mjs "$(find tauri-shell/target/release/bundle/rpm -maxdepth 1 -type f -name '*.rpm' -print -quit)" --arch=x64
+
+      - name: Collect and rename artifacts
+        working-directory: ${{ github.workspace }}/tauri-shell/target/release/bundle
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          for f in deb/*.deb appimage/*.AppImage rpm/*.rpm; do
+            [ -f "$f" ] || continue
+            ext="${f##*.}"
+            cp "$f" "out/Deepseek-Harness-EAC-${{ matrix.variant }}-v6.0.0-linux-x64.$ext"
+          done
+          cd out && sha256sum * > SHA256SUMS.txt
+          ls -la
+
+      - name: Upload Linux installer packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: dsh-eac-linux-x64-${{ matrix.variant }}
+          path: tauri-shell/target/release/bundle/out/*
+          if-no-files-found: error
+          retention-days: 14

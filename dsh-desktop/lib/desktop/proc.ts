@@ -140,6 +140,13 @@ export function childEnv(): NodeJS.ProcessEnv {
   // MCP 等）据此把安装/读写落到桌面专属 profile，而不是原生的 web profile。
   env.DSH_DESKTOP = '1';
   env.DSH_DESKTOP_PROFILE = ctx.getDesktopProfile();
+  // full 组合形态：随包携带 assets/full-pack 时要求显式隔离 DSH_HOME，
+  // 并向 dsh 子进程传递组合标记（与官方 v6.0.0 proc 等价）。
+  if (fs.existsSync(path.join(APP_ROOT, 'assets', 'full-pack', 'composition.json'))) {
+    if (!dshHome) throw new Error('Full EAC requires an explicit isolated DSH_HOME');
+    env.DSH_SUITE_PROFILE = ctx.getDesktopProfile();
+    env.DSH_EAC_FULL_COMPOSITION = '1';
+  }
   // 资源根（dsh-desktop 树）：L3 插件进程据此定位功能包 CLI 等随包资源。
   env.DSH_DESKTOP_RESOURCE_ROOT = APP_ROOT;
   if (dshHome && userDefaultPreset() === 'danger-full-access') {

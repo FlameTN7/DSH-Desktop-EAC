@@ -17,6 +17,7 @@ import path = require('node:path');
 import fs = require('node:fs');
 import os = require('node:os');
 import { updCtx, APP_ROOT } from './runtime-paths';
+import { seedFullProfile, bindFullHostClosure } from './full-composition';
 // updater.js 尚未类型化（Wave 3 收编），先以窄签名消费。
 const updater = require('../../updater') as {
   loadSettings(c: ReturnType<typeof updCtx>): { shareWebProfile?: boolean };
@@ -89,6 +90,12 @@ export function ensureDesktopProfileInit() {
     const home = ctx.getDshHome() || path.join(os.homedir(), '.dsh');
     const dir = desktopProfileDir();
     if (desktopProfile() === 'web') return; // 共享模式走官方模板
+    // full-pack 离线全量种子：仅新建 profile 时原子播种（已有 profile 不动），
+    // 与官方 v6.0.0 full 包行为等价；无 assets/full-pack 时自动跳过。
+    if (seedFullProfile(dir)) {
+      bindFullHostClosure(home);
+      ctx.log('boot', '已从随包完整离线种子初始化 profile: ' + dir);
+    }
     fs.mkdirSync(dir, { recursive: true });
     const manifest = path.join(dir, 'package.json');
     if (!fs.existsSync(manifest)) {
